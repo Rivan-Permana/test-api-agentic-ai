@@ -1,0 +1,58 @@
+# cloudbuild.yaml
+# File konfigurasi ini untuk Google Cloud Build.
+# Ini akan membangun image Docker, mendorongnya ke Artifact Registry,
+# dan men-deploy-nya ke Cloud Run.
+
+steps:
+  # 1. Bangun Image Docker
+  # Langkah ini membangun image container menggunakan Dockerfile di direktori saat ini.
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}'
+      - '.'
+    id: 'Build'
+
+  # 2. Dorong Image ke Artifact Registry
+  # Langkah ini mendorong image yang telah dibangun ke Google Artifact Registry.
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}'
+    id: 'Push'
+
+  # 3. Deploy ke Cloud Run
+  # Langkah ini men-deploy image dari Artifact Registry ke layanan Cloud Run.
+  # Ini juga mengatur variabel lingkungan dari Secret Manager.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image'
+      - '${_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest' # Mengambil secret
+    id: 'Deploy'
+
+# Menyimpan image yang dibangun di Artifact Registry
+images:
+  - '${_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}'
+
+# Variabel substitusi yang dapat diatur saat memicu build
+# Anda dapat mengatur nilai default di sini atau saat membuat trigger.
+substitutions:
+  _SERVICE_NAME: 'ml-bi-pipeline-api' # Nama layanan Cloud Run Anda
+  _REGION: 'asia-southeast2'          # Region untuk layanan Cloud Run (misal: Jakarta)
+  _LOCATION: 'asia-southeast2'        # Lokasi Artifact Registry (harus cocok dengan region)
+  _REPOSITORY: 'my-apps'              # Nama repository di Artifact Registry
+
+# Opsi untuk build
+options:
+  logging: CLOUD_LOGGING_ONLY

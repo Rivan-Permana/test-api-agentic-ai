@@ -1,0 +1,13 @@
+# --- requirements.txt ---
+fastapi
+uvicorn[standard]
+gunicorn
+pandasai
+pandasai-litellm
+litellm
+scikit-learn
+openai
+python-dotenv
+python-multipart
+pandas
+kagglehub

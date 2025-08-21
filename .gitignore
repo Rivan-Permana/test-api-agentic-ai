@@ -1,0 +1,32 @@
+# Lingkungan Virtual (Virtual Environment)
+# Abaikan folder virtual environment untuk menjaga repositori tetap bersih.
+.venv
+venv
+env
+
+# File Rahasia (Secrets)
+# JANGAN PERNAH memasukkan file .env yang berisi API keys ke dalam Git.
+.env
+
+# Cache dan file hasil kompilasi Python
+# File-file ini dibuat secara otomatis oleh Python.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Artefak Build dan Distribusi
+# Folder yang dibuat saat mem-package aplikasi.
+build/
+dist/
+*.egg-info
+
+# Konfigurasi IDE/Editor
+# Setiap developer mungkin memiliki pengaturan editor yang berbeda.
+.vscode/
+.idea/
+
+# File yang dibuat oleh Sistem Operasi
+# Abaikan file sistem dari macOS dan Windows.
+.DS_Store
+Thumbs.db
