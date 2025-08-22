@@ -1,14 +1,22 @@
 # --- requirements.txt ---
-numpy
-fastapi
-uvicorn[standard]
-gunicorn
-pandasai
-pandasai-litellm
-litellm
-scikit-learn
-openai
-python-dotenv
-python-multipart
-pandas
-kagglehub
+
+# Core PandasAI v3
+pandasai==3.0.2b
+pandasai-litellm==0.1.7
+litellm==1.41.3
+openai==1.35.7
+
+# Data & Analysis
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.5.0
+kagglehub==0.2.5
+
+# Web Service
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+gunicorn==22.0.0
+python-multipart==0.0.9
+
+# Environment
+python-dotenv==1.0.1
