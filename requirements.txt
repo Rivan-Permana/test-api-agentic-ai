@@ -1,4 +1,5 @@
 # --- requirements.txt ---
+numpy
 fastapi
 uvicorn[standard]
 gunicorn
