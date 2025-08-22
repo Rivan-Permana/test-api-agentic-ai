@@ -12,6 +12,7 @@
 #   -H "Content-Type: multipart/form-data" \
 #   -F "prompt=Berapa pendapatan rata-rata per bulan?" \
 #   -F "file=@/path/to/your/data.csv"
+
 # Gunakan runtime Python 3.10-slim sebagai base image
 FROM python:3.10-slim
 
@@ -21,8 +22,13 @@ WORKDIR /app
 # Salin file requirements.txt terlebih dahulu untuk caching layer
 COPY requirements.txt .
 
-# Instal dependensi Python
+# --- PERUBAHAN DI SINI ---
+# 1. Instal numpy terlebih dahulu karena beberapa paket (seperti duckdb) membutuhkannya saat instalasi.
+RUN pip install --no-cache-dir numpy
+
+# 2. Instal sisa dependensi Python dari requirements.txt
 RUN pip install --no-cache-dir --upgrade pip -r requirements.txt
+# --- AKHIR PERUBAHAN ---
 
 # Salin sisa kode aplikasi
 COPY main.py .
