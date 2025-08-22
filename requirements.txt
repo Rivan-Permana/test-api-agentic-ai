@@ -2,13 +2,13 @@
 
 # Core PandasAI v3
 pandasai==3.0.0b2
-pandasai-litellm==0.1.7
-litellm==1.41.3
-openai==1.35.7
+# pandasai-litellm==0.1.7
+# litellm==1.41.3
+# openai==1.35.7
 
 # Data & Analysis
-pandas==2.2.2
-numpy==1.26.4
+# pandas==2.2.2
+# numpy==1.26.4
 scikit-learn==1.5.0
 kagglehub==0.2.5
 
