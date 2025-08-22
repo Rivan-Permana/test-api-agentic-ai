@@ -1,5 +1,5 @@
 # main.py
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 import pandas as pd
+import shutil
 
 # Import your existing pipeline components
 import pandasai as pai
@@ -44,7 +45,7 @@ app.add_middleware(
 class AnalysisRequest(BaseModel):
     user_prompt: str
     openai_api_key: Optional[str] = None
-    dataset_path: Optional[str] = None
+    dataset_path: Optional[str] = None  # now must point to a local CSV path if used
 
 class AnalysisResponse(BaseModel):
     task_id: str
@@ -83,30 +84,27 @@ def get_content(r):
         return str(r)
 
 class MLBIPipeline:
-    def __init__(self, api_key: str, dataset_path: str = None):
+    def __init__(self, api_key: str, dataset_path: str):
         self.api_key = api_key
-        self.dataset_path = dataset_path or self._get_default_dataset()
+        self.dataset_path = dataset_path  # must be provided (CSV saved locally)
         self.df = None
         self.llm = None
         self._setup()
 
-    def _get_default_dataset(self):
-        # Default dataset path - modify as needed
-        default_path = "/tmp/ncr_ride_bookings.csv"
-        if not os.path.exists(default_path):
-            # Download dataset if not exists
-            try:
-                import kagglehub
-                path = kagglehub.dataset_download("yashdevladdha/uber-ride-analytics-dashboard")
-                return os.path.join(path, "ncr_ride_bookings.csv")
-            except Exception as e:
-                logger.error(f"Failed to download dataset: {e}")
-                raise HTTPException(status_code=500, detail="Dataset not available")
-        return default_path
+    def _validate_csv_path(self):
+        if not self.dataset_path:
+            raise HTTPException(status_code=400, detail="CSV file path is required")
+        if not os.path.exists(self.dataset_path):
+            raise HTTPException(status_code=400, detail=f"CSV file not found: {self.dataset_path}")
+        if not self.dataset_path.lower().endswith(".csv"):
+            raise HTTPException(status_code=400, detail="Only .csv files are supported")
 
     def _setup(self):
-        """Setup LLM and load data"""
+        """Setup LLM and load data (CSV only)"""
         try:
+            # Validate CSV
+            self._validate_csv_path()
+
             os.environ["OPENAI_API_KEY"] = self.api_key
             self.llm = LiteLLM(model="gpt-5", api_key=self.api_key)
 
@@ -117,10 +115,12 @@ class MLBIPipeline:
             # Create charts directory
             os.makedirs("./charts", exist_ok=True)
 
-            # Load data
+            # Load data (CSV)
             self.df = pai.read_csv(self.dataset_path)
             logger.info(f"Dataset loaded successfully with shape: {self.df.shape}")
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Setup failed: {e}")
             raise HTTPException(status_code=500, detail=f"Pipeline setup failed: {str(e)}")
@@ -133,7 +133,7 @@ class MLBIPipeline:
             self.df.info(buf=buf)
             data_info = buf.getvalue()
 
-            # Step 1: Orchestrate LLMs
+            # Step 1: Orchestrate LLMs (PROMPT TIDAK DIUBAH)
             logger.info("Starting orchestration...")
             initial_response = completion(
                 model="gpt-5",
@@ -195,7 +195,7 @@ class MLBIPipeline:
             analyzer_prompt = spec["analyzer_prompt"]
             compiler_instruction = spec["compiler_instruction"]
 
-            # Step 2: Data Manipulation
+            # Step 2: Data Manipulation (CONFIG TIDAK DIUBAH)
             logger.info("Running data manipulation...")
             data_manipulator = SmartDataframe(
                 self.df,
@@ -220,7 +220,7 @@ class MLBIPipeline:
             else:
                 df_processed = data_manipulator_response
 
-            # Step 3: Data Visualization
+            # Step 3: Data Visualization (CONFIG TIDAK DIUBAH)
             logger.info("Running data visualization...")
             data_visualizer = SmartDataframe(
                 df_processed,
@@ -240,7 +240,7 @@ class MLBIPipeline:
             )
             data_visualizer_response = data_visualizer.chat(visualizer_prompt)
 
-            # Step 4: Data Analysis
+            # Step 4: Data Analysis (CONFIG TIDAK DIUBAH)
             logger.info("Running data analysis...")
             data_analyzer = SmartDataframe(
                 df_processed,
@@ -260,7 +260,7 @@ class MLBIPipeline:
             )
             data_analyzer_response = data_analyzer.chat(f"Respond like you are communicating to a person. {analyzer_prompt}")
 
-            # Step 5: Compile responses
+            # Step 5: Compile responses (PROMPT/CONFIG TIDAK DIUBAH)
             logger.info("Compiling final response...")
             final_response = completion(
                 model="gpt-5",
@@ -297,12 +297,12 @@ class MLBIPipeline:
             raise Exception(f"Analysis pipeline failed: {str(e)}")
 
 # Background task to run analysis
-async def run_analysis_task(task_id: str, user_prompt: str, api_key: str, dataset_path: str = None):
+async def run_analysis_task(task_id: str, user_prompt: str, api_key: str, dataset_path: str):
     """Background task to run the analysis pipeline"""
     try:
         task_storage[task_id]["status"] = "processing"
 
-        # Initialize pipeline
+        # Initialize pipeline (CSV only)
         pipeline = MLBIPipeline(api_key, dataset_path)
 
         # Run analysis
@@ -331,14 +331,85 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
+# ---- NEW: analyze via file upload (preferred) ----
+@app.post("/analyze/upload", response_model=AnalysisResponse)
+async def analyze_data_upload(
+    background_tasks: BackgroundTasks,
+    user_prompt: str = Form(...),
+    openai_api_key: Optional[str] = Form(None),
+    file: UploadFile = File(...)
+):
+    """
+    Start data analysis pipeline by uploading a local CSV file.
+    Content-Type: multipart/form-data
+    Fields:
+      - user_prompt (str)
+      - openai_api_key (optional str)
+      - file (UploadFile, .csv only)
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported")
+
+    api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenAI API key is required")
+
+    # Save upload
+    os.makedirs("./uploads", exist_ok=True)
+    saved_path = os.path.join("./uploads", f"{uuid.uuid4()}_{file.filename}")
+    try:
+        with open(saved_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    finally:
+        try:
+            file.file.close()
+        except Exception:
+            pass
+
+    # Generate task ID
+    task_id = str(uuid.uuid4())
+
+    # Initialize task storage
+    task_storage[task_id] = {
+        "status": "queued",
+        "user_prompt": user_prompt,
+        "created_at": pd.Timestamp.now().isoformat(),
+        "dataset_path": saved_path
+    }
+
+    # Add background task
+    background_tasks.add_task(
+        run_analysis_task,
+        task_id,
+        user_prompt,
+        api_key,
+        saved_path
+    )
+
+    return AnalysisResponse(
+        task_id=task_id,
+        status="queued",
+        message="Analysis started. Use /status/{task_id} to check progress."
+    )
+
+# ---- Existing JSON endpoint (now CSV path only; no Kaggle fallback) ----
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_data(request: AnalysisRequest, background_tasks: BackgroundTasks):
-    """Start data analysis pipeline"""
-
+    """
+    Start data analysis pipeline by providing a local CSV path on the server.
+    No Kaggle/download fallback. 'dataset_path' must be a readable .csv file path.
+    """
     # Validate API key
     api_key = request.openai_api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=400, detail="OpenAI API key is required")
+
+    if not request.dataset_path:
+        raise HTTPException(status_code=400, detail="dataset_path (CSV) is required for this endpoint")
+    if not request.dataset_path.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files are supported")
+    if not os.path.exists(request.dataset_path):
+        raise HTTPException(status_code=400, detail=f"CSV file not found: {request.dataset_path}")
 
     # Generate task ID
     task_id = str(uuid.uuid4())
@@ -347,7 +418,8 @@ async def analyze_data(request: AnalysisRequest, background_tasks: BackgroundTas
     task_storage[task_id] = {
         "status": "queued",
         "user_prompt": request.user_prompt,
-        "created_at": pd.Timestamp.now().isoformat()
+        "created_at": pd.Timestamp.now().isoformat(),
+        "dataset_path": request.dataset_path
     }
 
     # Add background task
@@ -414,6 +486,14 @@ async def delete_task(task_id: str):
         chart_path = task_data["result"]["chart_path"]
         if os.path.exists(chart_path):
             os.remove(chart_path)
+
+    # Clean up uploaded CSV if stored
+    dataset_path = task_data.get("dataset_path")
+    if dataset_path and os.path.exists(dataset_path):
+        try:
+            os.remove(dataset_path)
+        except Exception as e:
+            logger.warning(f"Failed to remove uploaded CSV: {e}")
 
     # Remove from storage
     del task_storage[task_id]
