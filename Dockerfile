@@ -27,4 +27,4 @@ COPY main.py .
 ENV PORT 8080
 
 # Jalankan aplikasi menggunakan Gunicorn saat container dimulai
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:8080"]
+CMD ["gunicorn", "-w", "1", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:8080", "--timeout", "120"]
