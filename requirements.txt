@@ -2,8 +2,8 @@
 
 # Core PandasAI v3
 pandasai==3.0.0b2
-# pandasai-litellm==0.1.7
-# litellm==1.41.3
+litellm==1.41.3
+pandasai-litellm==0.1.7
 # openai==1.35.7
 
 # Data & Analysis
