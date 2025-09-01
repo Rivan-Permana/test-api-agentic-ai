@@ -1,8 +1,8 @@
 # --- requirements.txt ---
 
 # Core PandasAI v3
-pandasai==3.0.0b2
-litellm==1.41.3
+pandasai>=3.0.0b2
+pandasai-litellm==0.0.1
 
 # Web Service
 fastapi==0.111.0
