@@ -21,10 +21,10 @@ RUN pip install --no-cache-dir numpy
 RUN pip install --no-cache-dir --upgrade pip -r requirements.txt
 
 # Salin sisa kode aplikasi
-COPY main.py .
+COPY . .
 
 # Tetapkan PORT yang akan diekspos oleh container
-ENV PORT 8080
+ENV PORT 8081
 
 # Jalankan aplikasi menggunakan Gunicorn saat container dimulai
 CMD ["gunicorn", "-w", "1", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:8080", "--timeout", "120"]
