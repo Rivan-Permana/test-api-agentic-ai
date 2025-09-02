@@ -1,5 +1,4 @@
-# main.py — versi perbaikan (upload lokal → GCS → analisis → status & chart)
-
+# main.py — upload lokal → (opsi) GCS → analisis → status & chart (dengan fallback)
 import io
 import json
 import logging
@@ -21,11 +20,11 @@ from pandasai.core.response.dataframe import DataFrameResponse
 from pandasai_litellm.litellm import LiteLLM
 from pydantic import BaseModel
 
-# --- KONFIGURASI ---
+# --- LOGGING ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Inisialisasi Klien Google Cloud
+# --- GCP CLIENTS ---
 try:
     storage_client = storage.Client()
     firestore_client = firestore.Client()
@@ -36,40 +35,32 @@ except Exception as e:
     storage_client = None
     firestore_client = None
 
-# Inisialisasi Aplikasi FastAPI
+# --- FASTAPI APP ---
 app = FastAPI(
     title="ML BI Pipeline API",
     description="API for ML Business Intelligence Pipeline Analysis",
     version="1.0.0",
 )
 
-ALLOW_ALL_DEV = os.getenv("ALLOW_ALL_DEV", "true").lower() == "true"
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    # tambahkan kalau kamu pakai port lain:
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
 
-if ALLOW_ALL_DEV:
-    # DEV: izinkan semua origin (tanpa credentials)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,   
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-        max_age=86400,
-    )
-else:
-    # PROD: whitelist domain FE kamu
-    ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[o.strip() for o in ALLOWED_ORIGINS if o.strip()],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-        max_age=86400,
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,           # pakai True kalau kamu kirim cookies/Authorization
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
+)
 
-# --- MODEL DATA (PYDANTIC SCHEMAS) ---
+# --- SCHEMAS ---
 class AnalysisResponse(BaseModel):
     task_id: str
     status: str
@@ -82,10 +73,9 @@ class TaskStatus(BaseModel):
     error: Optional[str] = None
     chart_url: Optional[str] = None
 
-
-# --- UTIL LLM ---
+# --- HELPERS ---
 def get_content(r):
-    """Ambil konten dari response litellm (support non-stream dan stream)."""
+    """Ambil konten dari response litellm (support non-stream & stream)."""
     try:
         msg = r.choices[0].message
         return msg["content"] if isinstance(msg, dict) else msg.content
@@ -103,8 +93,17 @@ def get_content(r):
     except Exception:
         return str(r)
 
+def is_gs_path(path: str) -> bool:
+    return isinstance(path, str) and path.startswith("gs://")
 
-# --- KELAS LOGIKA INTI (PIPELINE) ---
+def ensure_local_copy_from_gcs(gcs_path: str, dest_path: Path, storage_client_: storage.Client):
+    bucket_name = gcs_path.split("/")[2]
+    blob_name = "/".join(gcs_path.split("/")[3:])
+    bucket = storage_client_.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.download_to_filename(str(dest_path))
+
+# --- CORE PIPELINE ---
 class MLBIPipeline:
     def __init__(self, api_key: str, dataset_path: str):
         self.api_key = api_key
@@ -273,7 +272,7 @@ class MLBIPipeline:
             )
             final_content = get_content(final_response)
 
-            # ambil chart terakhir (jika ada)
+            # ambil chart terbaru (jika ada)
             chart_path = None
             charts_dir = Path("./charts")
             if charts_dir.exists():
@@ -292,12 +291,11 @@ class MLBIPipeline:
             logger.error(f"Analysis failed: {e}", exc_info=True)
             raise Exception(f"Analysis pipeline failed: {str(e)}")
 
-
-# --- LOGIKA BACKGROUND TASK ---
-async def run_analysis_task(task_id: str, user_prompt: str, api_key: str, gcs_path: str):
-    """Background task untuk menjalankan pipeline analisis dari file di GCS."""
-    if storage_client is None or firestore_client is None:
-        raise RuntimeError("GCP clients are not initialized")
+# --- BACKGROUND TASK ---
+async def run_analysis_task(task_id: str, user_prompt: str, api_key: str, dataset_locator: str):
+    """Jalankan pipeline analisis dari gs:// atau path lokal (fallback)."""
+    if firestore_client is None:
+        raise RuntimeError("Firestore client is not initialized")
 
     task_ref = firestore_client.collection("tasks").document(task_id)
     local_csv_path = ""
@@ -306,18 +304,20 @@ async def run_analysis_task(task_id: str, user_prompt: str, api_key: str, gcs_pa
 
         temp_dir = Path("./temp_data")
         temp_dir.mkdir(exist_ok=True)
-        local_csv_path = temp_dir / f"{task_id}.csv"
+        local_csv_path = str(temp_dir / f"{task_id}.csv")
 
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob_name = gcs_path.replace(f"gs://{BUCKET_NAME}/", "")
-        blob = bucket.blob(blob_name)
-        blob.download_to_filename(str(local_csv_path))
-        logger.info(f"Successfully downloaded {gcs_path} to {local_csv_path}")
+        if is_gs_path(dataset_locator):
+            if storage_client is None:
+                raise RuntimeError("Storage client is not initialized for gs:// path")
+            ensure_local_copy_from_gcs(dataset_locator, Path(local_csv_path), storage_client)
+            logger.info(f"Downloaded {dataset_locator} to {local_csv_path}")
+        else:
+            shutil.copyfile(dataset_locator, local_csv_path)
+            logger.info(f"Copied local dataset {dataset_locator} to {local_csv_path}")
 
         pipeline = MLBIPipeline(api_key, str(local_csv_path))
         result = await pipeline.run_analysis(user_prompt)
 
-        # jika ada chart, salin ke nama khusus task: ./charts/{task_id}.png
         chart_url = None
         if result.get("chart_path") and os.path.exists(result["chart_path"]):
             charts_dir = Path("./charts")
@@ -330,33 +330,28 @@ async def run_analysis_task(task_id: str, user_prompt: str, api_key: str, gcs_pa
                 logger.warning(f"Failed to copy chart for task {task_id}: {e}")
 
         task_ref.update(
-            {
-                "status": "completed",
-                "result": result,
-                "chart_url": chart_url,
-            }
+            {"status": "completed", "result": result, "chart_url": chart_url}
         )
         logger.info(f"Task {task_id} completed successfully.")
-
     except Exception as e:
         logger.error(f"Task {task_id} failed: {e}", exc_info=True)
         task_ref.update({"status": "failed", "error": str(e)})
     finally:
-        if local_csv_path and os.path.exists(local_csv_path):
-            os.remove(local_csv_path)
-            logger.info(f"Cleaned up local file: {local_csv_path}")
+        try:
+            if local_csv_path and os.path.exists(local_csv_path):
+                os.remove(local_csv_path)
+                logger.info(f"Cleaned up local file: {local_csv_path}")
+        except Exception:
+            pass
 
-
-# --- API ENDPOINTS ---
+# --- ENDPOINTS ---
 @app.get("/")
 async def root():
     return {"message": "ML BI Pipeline API is running!", "version": "1.0.0"}
 
-
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-
 
 @app.post("/analyze/upload", response_model=AnalysisResponse)
 async def analyze_data_upload(
@@ -374,8 +369,8 @@ async def analyze_data_upload(
     if not api_key:
         raise HTTPException(status_code=400, detail="OpenAI API key is required")
 
-    if storage_client is None or firestore_client is None:
-        raise HTTPException(status_code=500, detail="GCP clients not initialized")
+    if firestore_client is None:
+        raise HTTPException(status_code=500, detail="Firestore not initialized")
 
     task_id = str(uuid.uuid4())
 
@@ -383,17 +378,35 @@ async def analyze_data_upload(
     orig_name = Path(file.filename or "upload").name
     if not orig_name.lower().endswith(".csv"):
         orig_name = f"{orig_name}.csv"
-    gcs_filename = f"uploads/{task_id}_{orig_name}"
 
+    # 1) Selalu simpan ke file lokal dulu
+    temp_dir = Path("./temp_uploads")
+    temp_dir.mkdir(exist_ok=True)
+    local_fname = f"{task_id}_{Path(orig_name).name}"
+    local_path = temp_dir / local_fname
     try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(gcs_filename)
-        blob.upload_from_file(file.file)
-        gcs_path = f"gs://{BUCKET_NAME}/{gcs_filename}"
-        logger.info(f"File uploaded to {gcs_path}")
-    except Exception as e:
-        logger.error(f"Failed to upload file to GCS: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Could not upload file to storage.")
+        file.file.seek(0)
+        with open(local_path, "wb") as out:
+            shutil.copyfileobj(file.file, out)
+    finally:
+        try:
+            file.file.seek(0)
+        except Exception:
+            pass
+
+    # 2) Coba upload ke GCS (jika client ada). Jika gagal → fallback ke lokal
+    gcs_path = None
+    if storage_client is not None:
+        try:
+            bucket = storage_client.bucket(BUCKET_NAME)
+            blob = bucket.blob(f"uploads/{local_fname}")
+            blob.upload_from_filename(str(local_path), content_type="text/csv")
+            gcs_path = f"gs://{BUCKET_NAME}/uploads/{local_fname}"
+            logger.info(f"File uploaded to {gcs_path}")
+        except Exception as e:
+            logger.error(f"GCS upload failed, will fallback to local path. Reason: {e}", exc_info=True)
+
+    dataset_locator = gcs_path if gcs_path else str(local_path)
 
     # Catat task & jalankan background job
     task_ref = firestore_client.collection("tasks").document(task_id)
@@ -402,18 +415,18 @@ async def analyze_data_upload(
             "status": "queued",
             "user_prompt": user_prompt,
             "created_at": pd.Timestamp.now().isoformat(),
-            "dataset_path": gcs_path,
+            "dataset_path": dataset_locator,
+            "source": "gcs" if gcs_path else "local",
         }
     )
 
-    background_tasks.add_task(run_analysis_task, task_id, user_prompt, api_key, gcs_path)
+    background_tasks.add_task(run_analysis_task, task_id, user_prompt, api_key, dataset_locator)
 
     return AnalysisResponse(
         task_id=task_id,
         status="queued",
         message="Analysis started. Use /status/{task_id} to check progress.",
     )
-
 
 @app.get("/status/{task_id}", response_model=TaskStatus)
 async def get_task_status(task_id: str):
@@ -436,7 +449,6 @@ async def get_task_status(task_id: str):
         chart_url=task_data.get("chart_url"),
     )
 
-
 @app.get("/tasks")
 async def list_tasks():
     """List all tasks from Firestore."""
@@ -457,7 +469,6 @@ async def list_tasks():
         )
     return {"tasks": tasks_list}
 
-
 @app.get("/chart/{task_id}")
 async def get_chart(task_id: str):
     """Serve chart PNG yang sudah disalin ke ./charts/{task_id}.png"""
@@ -471,11 +482,7 @@ async def get_chart(task_id: str):
         return FileResponse(path=str(alt[-1]), media_type="image/png")
     return FileResponse(path=str(file_path), media_type="image/png")
 
-
 if __name__ == "__main__":
-    import uvicorn, os
-    port = int(os.getenv("PORT", 8080))  
-
-    on_cloud_run = bool(os.getenv("K_SERVICE"))
-    host = "0.0.0.0" if on_cloud_run else os.getenv("HOST", "127.0.0.1")
-    uvicorn.run("main:app", host=host, port=port, reload=not on_cloud_run)
+    import uvicorn
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True)
