@@ -43,18 +43,31 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+ALLOW_ALL_DEV = os.getenv("ALLOW_ALL_DEV", "true").lower() == "true"
+
+if ALLOW_ALL_DEV:
+    # DEV: izinkan semua origin (tanpa credentials)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,   
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=86400,
+    )
+else:
+    # PROD: whitelist domain FE kamu
+    ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in ALLOWED_ORIGINS if o.strip()],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=86400,
+    )
 
 # --- MODEL DATA (PYDANTIC SCHEMAS) ---
 class AnalysisResponse(BaseModel):
@@ -462,7 +475,7 @@ async def get_chart(task_id: str):
 if __name__ == "__main__":
     import uvicorn, os
     port = int(os.getenv("PORT", 8081))  
-    
+
     on_cloud_run = bool(os.getenv("K_SERVICE"))
     host = "0.0.0.0" if on_cloud_run else os.getenv("HOST", "127.0.0.1")
     uvicorn.run("main:app", host=host, port=port, reload=not on_cloud_run)
