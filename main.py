@@ -460,8 +460,9 @@ async def get_chart(task_id: str):
 
 
 if __name__ == "__main__":
-    import uvicorn
-    import os
-
+    import uvicorn, os
     port = int(os.getenv("PORT", 8081))  
-    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True)
+    
+    on_cloud_run = bool(os.getenv("K_SERVICE"))
+    host = "0.0.0.0" if on_cloud_run else os.getenv("HOST", "127.0.0.1")
+    uvicorn.run("main:app", host=host, port=port, reload=not on_cloud_run)
